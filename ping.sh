@@ -3,18 +3,19 @@
 # ping.sh - ping sweep, port scan, banner grab
 #
 # Usage:
-#   $0                  # default settings: scan local subnet, port 80, in table format
-#   $0 192.168.1        # scan subnet 192.168.1.1-254
-#   $0 192.168.1 8080   # scan subnet with custom port
-#   $0 192.168.1.123    # scan single IP
-#   $0 --port 443       # scan local subnet with port 443
-#   $0 --csv            # CSV output
-#   $0 --json           # JSON output
-#   $0 --sort mac:down  # sort by MAC descending
-#   $0 --help           # help
+#   $0                     # default: scan local subnet, port 80, table format
+#   $0 192.168.1           # scan subnet 192.168.1.1-254
+#   $0 192.168.1 2049      # scan subnet with custom port
+#   $0 192.168.1.123       # scan single IP
+#   $0 --port 443          # scan subnet with port 443
+#   $0 --csv               # CSV output
+#   $0 --json              # JSON output
+#   $0 --sort mac:down     # sort by MAC descending
+#   $0 --just-ping         # only ping (fastest!) no port scan, no banner
+#   $0 --help              # help
 #
-# All togeather: 
-#   $0 192.168.1 8443 --json --sort mac:down
+# All together:
+#   $0 192.168.1 2049 --json --sort mac:down
 #
 
 REQUIRED_CMDS=(ip ping nc awk grep cut sort xargs timeout curl openssl getent strings tr mktemp)
@@ -33,10 +34,12 @@ FORMAT="text"
 INPUT=""
 PORT="80"
 SCAN_MODE=""
+JUST_PING=0
 
 for ((i=1; i<=$#; i++)); do
     eval ARG="\${$i}"
     eval NEXT="\${$((i+1))}"
+    [[ "$ARG" == "--just-ping" ]] && JUST_PING=1
     [[ "$ARG" == "--csv" ]] && FORMAT="csv"
     [[ "$ARG" == "--json" ]] && FORMAT="json"
     if [[ "$ARG" == --sort=* ]]; then
@@ -132,12 +135,17 @@ PING_TARGET() {
     MAC=$(ip neigh show "$IP" | awk '{print $5}')
     TTL=$(echo "$OUT" | grep -oE "ttl=[0-9]+" | cut -d= -f2)
     TIME=$(echo "$OUT" | grep -oE "time=[0-9.]+ ms" | cut -d= -f2)
-    if nc -z -w1 "$IP" "$PORT" &>/dev/null; then
-        OPEN="yes"
-        DETAILS=$(DETECT_BANNER "$IP" "$PORT")
-    else
+    if (( JUST_PING )); then
         OPEN="--"
         DETAILS=""
+    else
+        if nc -z -w1 "$IP" "$PORT" &>/dev/null; then
+            OPEN="yes"
+            DETAILS=$(DETECT_BANNER "$IP" "$PORT")
+        else
+            OPEN="--"
+            DETAILS=""
+        fi
     fi
     echo -e "$IP\t${HOST:--}\t${MAC:--}\t${TTL:--}\t${TIME:--}\t$OPEN\t$DETAILS"
 }
@@ -145,6 +153,7 @@ PING_TARGET() {
 export -f PING_TARGET
 export -f DETECT_BANNER
 export PORT
+export JUST_PING
 
 GENERATE_IPS() {
     if [[ "$SCAN_MODE" == "single" ]]; then echo "$INPUT"
