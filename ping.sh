@@ -3,22 +3,22 @@
 # ping.sh - ping sweep, port scan, banner grab
 #
 # Usage:
-#   $0                     # default: scan local subnet, port 80, table format
-#   $0 192.168.1           # scan subnet 192.168.1.1-254
-#   $0 192.168.1 2049      # scan subnet with custom port
-#   $0 192.168.1.123       # scan single IP
-#   $0 --port 443          # scan subnet with port 443
-#   $0 --csv               # CSV output
-#   $0 --json              # JSON output
-#   $0 --sort mac:down     # sort by MAC descending
-#   $0 --just-ping         # only ping (fastest!) no port scan, no banner
-#   $0 --help              # help
+#   $0                               # default: scan local subnet, no port, table format
+#   $0 192.168.1                     # scan subnet 192.168.1.1-254
+#   $0 192.168.1.254                 # scan single IP
+#   $0 --port 111                    # scan + port 111 open check, no banner
+#   $0 192.168.1 --port 443          # ping sweep, check port 443
+#   $0 192.168.1 --banner --port 80  # scan + check port 80 + grab banner
+#   $0 --csv                         # CSV output
+#   $0 --json                        # JSON output
+#   $0 --sort mac:down               # sort by MAC descending
+#   $0 --help                        # show help
 #
 # All together:
-#   $0 192.168.1 2049 --json --sort mac:down
+#   $0 192.168.1 --banner --port 443 --json --sort mac:down
 #
 
-REQUIRED_CMDS=(ip ping nc awk grep cut sort xargs timeout curl openssl getent strings tr mktemp)
+REQUIRED_CMDS=(ip ping awk grep cut sort xargs timeout getent strings tr mktemp)
 for CMD in "${REQUIRED_CMDS[@]}"; do
     command -v "$CMD" >/dev/null 2>&1 || { echo "Missing $CMD"; exit 1; }
 done
@@ -32,35 +32,107 @@ SORT_FIELD="ip"
 SORT_ORDER="up"
 FORMAT="text"
 INPUT=""
-PORT="80"
+PORT=""
 SCAN_MODE=""
-JUST_PING=0
+BANNER=0
+SHOW_HELP=0
+TARGET_COUNT=0
 
-for ((i=1; i<=$#; i++)); do
-    eval ARG="\${$i}"
-    eval NEXT="\${$((i+1))}"
-    [[ "$ARG" == "--just-ping" ]] && JUST_PING=1
-    [[ "$ARG" == "--csv" ]] && FORMAT="csv"
-    [[ "$ARG" == "--json" ]] && FORMAT="json"
-    if [[ "$ARG" == --sort=* ]]; then
-        VALUE="${ARG#--sort=}"
-        SORT_FIELD="${VALUE%%:*}"
-        SORT_ORDER="${VALUE##*:}"
-        [[ "$SORT_ORDER" == "$SORT_FIELD" ]] && SORT_ORDER="up"
-    elif [[ "$ARG" == "--sort" && "$NEXT" =~ ^[a-z]+(:up|:down)?$ ]]; then
-        SORT_FIELD="${NEXT%%:*}"
-        SORT_ORDER="${NEXT##*:}"
-        [[ "$SORT_ORDER" == "$SORT_FIELD" ]] && SORT_ORDER="up"
-    elif [[ "$ARG" == "--port" && "$NEXT" =~ ^[0-9]+$ ]]; then
-        PORT="$NEXT"; ((i++))
-    elif [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        INPUT="$ARG"; SCAN_MODE="single"
-    elif [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        INPUT="$ARG"; SCAN_MODE="subnet"
-    elif [[ "$ARG" =~ ^[0-9]+$ ]]; then
-        PORT="$ARG"
-    fi
+EXTRA_CMDS=(nc curl openssl)
+EXTRA_MISSING=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            SHOW_HELP=1
+            shift
+            ;;
+        --csv)
+            FORMAT="csv"
+            shift
+            ;;
+        --json)
+            FORMAT="json"
+            shift
+            ;;
+        --banner)
+            BANNER=1
+            shift
+            ;;
+        --sort)
+            if [[ "$2" =~ ^[a-z]+(:up|:down)?$ ]]; then
+                SORT_FIELD="${2%%:*}"
+                SORT_ORDER="${2##*:}"
+                [[ "$SORT_ORDER" == "$SORT_FIELD" ]] && SORT_ORDER="up"
+                shift 2
+            else
+                echo "Missing value for --sort"; exit 1
+            fi
+            ;;
+        --sort=*)
+            VALUE="${1#--sort=}"
+            SORT_FIELD="${VALUE%%:*}"
+            SORT_ORDER="${VALUE##*:}"
+            [[ "$SORT_ORDER" == "$SORT_FIELD" ]] && SORT_ORDER="up"
+            shift
+            ;;
+        --port)
+            if [[ "$2" =~ ^[0-9]+$ ]]; then
+                PORT="$2"
+                shift 2
+            else
+                echo "Missing or invalid value for --port"; exit 1
+            fi
+            ;;
+        --port=*)
+            PORT="${1#--port=}"
+            shift
+            ;;
+        --*)
+            echo "Unknown arg: $1"
+            exit 1
+            ;;
+        *)
+            if [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                (( TARGET_COUNT > 0 )) && { echo "Only one target allowed."; exit 1; }
+                INPUT="$1"
+                SCAN_MODE="single"
+                ((TARGET_COUNT++))
+            elif [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                (( TARGET_COUNT > 0 )) && { echo "Only one target allowed."; exit 1; }
+                INPUT="$1"
+                SCAN_MODE="subnet"
+                ((TARGET_COUNT++))
+            elif [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+                (( TARGET_COUNT > 0 )) && { echo "Only one target allowed."; exit 1; }
+                IP_RESOLVED=$(getent hosts "$1" | awk '{print $1}')
+                [[ "$IP_RESOLVED" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unable to resolve hostname: $1"; exit 1; }
+                INPUT="$IP_RESOLVED"
+                SCAN_MODE="single"
+                ((TARGET_COUNT++))
+            else
+                echo "Unknown arg: $1"
+                exit 1
+            fi
+            shift
+            ;;
+    esac
 done
+
+if (( SHOW_HELP )); then
+    grep '^#' "$0" \
+  | sed 's/^#//' \
+  | sed '1d'
+    exit 0
+fi
+
+if (( BANNER )); then
+    [[ -z "$PORT" ]] && { echo "--banner requires --port or a port argument"; exit 1; }
+    for CMD in "${EXTRA_CMDS[@]}"; do
+        command -v "$CMD" >/dev/null 2>&1 || { echo "Missing $CMD (required for --banner)"; EXTRA_MISSING=1; }
+    done
+    (( EXTRA_MISSING )) && exit 1
+fi
 
 if [[ -z "$INPUT" ]]; then
     IFACE=$(ip route show default | awk '/default/ {print $5}' | head -n1)
@@ -73,7 +145,6 @@ fi
 
 DETECT_BANNER() {
     local IP="$1" PORT="$2" BANNER SERVICE TITLE CN EXP BODY CERT SERVER
-
     if curl -skL --max-time 3 "https://$IP:$PORT" -o /dev/null 2>&1; then
         SERVICE="https"
         TMPBODY=$(mktemp)
@@ -135,17 +206,21 @@ PING_TARGET() {
     MAC=$(ip neigh show "$IP" | awk '{print $5}')
     TTL=$(echo "$OUT" | grep -oE "ttl=[0-9]+" | cut -d= -f2)
     TIME=$(echo "$OUT" | grep -oE "time=[0-9.]+ ms" | cut -d= -f2)
-    if (( JUST_PING )); then
-        OPEN="--"
-        DETAILS=""
-    else
+
+    if [[ -n "$PORT" ]]; then
         if nc -z -w1 "$IP" "$PORT" &>/dev/null; then
             OPEN="yes"
-            DETAILS=$(DETECT_BANNER "$IP" "$PORT")
+            DETAILS=""
+            if (( BANNER )); then
+                DETAILS=$(DETECT_BANNER "$IP" "$PORT")
+            fi
         else
             OPEN="--"
             DETAILS=""
         fi
+    else
+        OPEN="--"
+        DETAILS=""
     fi
     echo -e "$IP\t${HOST:--}\t${MAC:--}\t${TTL:--}\t${TIME:--}\t$OPEN\t$DETAILS"
 }
@@ -153,7 +228,7 @@ PING_TARGET() {
 export -f PING_TARGET
 export -f DETECT_BANNER
 export PORT
-export JUST_PING
+export BANNER
 
 GENERATE_IPS() {
     if [[ "$SCAN_MODE" == "single" ]]; then echo "$INPUT"
